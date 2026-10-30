@@ -220,6 +220,24 @@ main{max-width:760px;margin:0 auto;padding:16px 14px 120px}
 .kv{font-size:14px;padding:8px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px}
 .kv span{color:var(--muted)}
 .kv b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* folders & seals */
+.fbar{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 10px;margin:0 -2px;scrollbar-width:none}
+.fbar::-webkit-scrollbar{display:none}
+.fchip{flex:none;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:8px 14px;font-size:14px;font-weight:600;white-space:nowrap}
+.fchip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.fchip.add{color:var(--accent);border-style:dashed}
+.fchip small{font-weight:500;opacity:.75;margin-left:4px}
+.ftools{display:flex;gap:8px;margin:-2px 0 10px}
+.ftools .mini-btn{margin:0}
+.seals{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 12px}
+.seal-btn{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:6px 10px 6px 6px;font-size:14px;font-weight:600;color:var(--ink)}
+.seal-btn.on{border-color:#C8102E;box-shadow:0 0 0 2px rgba(200,16,46,.18)}
+.seal-btn canvas{width:30px;height:30px;display:block}
+.seal-btn.none{padding:6px 12px}
+.seal-h{font-size:13px;color:var(--muted);margin:6px 0 6px}
+.fpick{display:flex;flex-direction:column;gap:8px;margin:8px 0}
+.fpick .btn.on{border-color:var(--accent);background:var(--accent-soft)}
 </style>
 </head>
 <body>
@@ -342,6 +360,57 @@ async function processFile(file) {
   return id;
 }
 
+/* ---------- seal (電子印鑑) ---------- */
+const SEAL_RED = "#C8102E";
+function drawSeal(g, cx, cy, r, name) {
+  const chars = [...String(name).replace(/\s/g, "")].slice(0, 4);
+  if (!chars.length) return;
+  g.save();
+  g.globalAlpha = 0.9;
+  g.strokeStyle = SEAL_RED; g.fillStyle = SEAL_RED;
+  g.lineWidth = Math.max(1, r * 0.1);
+  g.beginPath(); g.arc(cx, cy, r - g.lineWidth / 2, 0, Math.PI * 2); g.stroke();
+  const n = chars.length;
+  const inner = (r - g.lineWidth) * 2;
+  const cs = n === 1 ? inner * 0.62 : n === 2 ? inner * 0.44 : n === 3 ? inner * 0.31 : inner * 0.24;
+  const wScale = n >= 3 ? 1.25 : 1.08;
+  g.font = `700 ${cs}px ${MINCHO}`;
+  g.textAlign = "center"; g.textBaseline = "middle";
+  const step = cs * (n >= 3 ? 1.0 : 1.04);
+  const y0 = cy - step * (n - 1) / 2;
+  chars.forEach((c, i) => {
+    g.save(); g.translate(cx, y0 + step * i + cs * 0.04); g.scale(wScale, 1);
+    g.fillText(c, 0, 0); g.restore();
+  });
+  g.restore();
+}
+function sealCanvas(name, px = 60) {
+  const c = document.createElement("canvas");
+  c.width = c.height = px;
+  drawSeal(c.getContext("2d"), px / 2, px / 2, px / 2 - 1, name);
+  return c;
+}
+
+/* ---------- settings (印鑑・フォルダ) ---------- */
+const DEFAULT_STAFF = ["吉田", "相澤", "玉岡", "前角地", "杉山"];
+const Settings = {
+  v: { staff: DEFAULT_STAFF.slice(), folders: [], updatedAt: 0 },
+  async load() {
+    const v = await DB.getMeta("settings");
+    this.v = { staff: DEFAULT_STAFF.slice(), folders: [], updatedAt: 0, ...(v || {}) };
+  },
+  async save() {
+    this.v.updatedAt = Date.now();
+    await DB.putMeta("settings", this.v);
+    if (Cloud.user) { await DB.putMeta("settingsPending", true); Cloud.sync({ pull: false }); }
+  },
+  async allFolders() {
+    const set = new Set(this.v.folders);
+    (await DB.getAll()).forEach(r => r.folder && set.add(r.folder));
+    return [...set].sort((a, b) => a.localeCompare(b, "ja"));
+  }
+};
+
 /* ---------- cloud (Supabase) ---------- */
 const CFG = window.HOKOKU_CONFIG || {};
 const Cloud = {
@@ -411,6 +480,14 @@ const Cloud = {
         if (error) throw error;
         this.deleted.delete(id); await this.saveMeta();
       }
+      if (await DB.getMeta("settingsPending")) {
+        const v = await DB.getMeta("settings");
+        if (v) {
+          const { error } = await this.sb.from("reports").upsert({ id: "settings-" + this.user.id, user_id: this.user.id, data: { kind: "settings", ...v }, updated_at: new Date(v.updatedAt || Date.now()).toISOString() });
+          if (error) throw error;
+        }
+        await DB.putMeta("settingsPending", false);
+      }
       for (const id of [...this.pending]) {
         const r = await DB.get(id);
         if (r) await this.pushOne(r);
@@ -434,6 +511,15 @@ const Cloud = {
     const remote = new Set();
     let changed = false;
     for (const row of data || []) {
+      if (row.data && row.data.kind === "settings") {
+        if (!(await DB.getMeta("settingsPending")) && (row.data.updatedAt || 0) > (Settings.v.updatedAt || 0)) {
+          const { kind, ...v } = row.data;
+          Settings.v = { ...Settings.v, ...v };
+          await DB.putMeta("settings", Settings.v);
+          changed = true;
+        }
+        continue;
+      }
       remote.add(row.id);
       const l = local.get(row.id), rr = row.data;
       if (!rr || this.pending.has(row.id) || this.deleted.has(row.id)) continue;
@@ -519,11 +605,31 @@ function authVals() {
   S.authEmail = ($("#auEmail")?.value || "").trim();
   return { email: S.authEmail, password: $("#auPass")?.value || "" };
 }
+function folderNameSheet(title, val, act) {
+  openSheet(`<div class="sh-head"><b>${esc(title)}</b><button class="sh-close" data-act="closeSheet">閉じる</button></div>
+    <label>フォルダ名（例：アイムファシリティーズ、2026年11月）<input id="folderIn" value="${esc(val)}" autocomplete="off"></label>
+    <div class="vbtns"><button class="btn primary block" data-act="${act}">決定</button></div>`);
+  setTimeout(() => $("#folderIn")?.focus(), 250);
+}
+function folderInput() {
+  const n = ($("#folderIn")?.value || "").trim().replace(/\s+/g, " ").slice(0, 40);
+  if (!n) { toast("フォルダ名を入力してください"); return ""; }
+  if (n === "*") { toast("その名前は使えません"); return ""; }
+  return n;
+}
+async function moveReport(id, folder) {
+  const r = await DB.get(id); if (!r) return;
+  r.folder = folder; r.updatedAt = Date.now();
+  await DB.put(r);
+  if (S.report && S.report.id === id) S.report.folder = folder;
+  Cloud.queue(r);
+}
 async function startUser(user) {
   Cloud.user = user;
   imgCache.clear();
   await DB.open("hokoku-" + user.id);
   await Cloud.loadMeta();
+  await Settings.load();
   await gcImages();
   renderHome();
   await Cloud.sync();
@@ -568,11 +674,11 @@ const emptySlot = () => ({ id: uid(), imgId: null, label: "", place: "", content
 const isEmptySlot = s => !s.imgId && !s.label && !s.place && !s.content;
 function newReport(o) {
   return {
-    id: uid(), name: "", orientation: o, perPage: DEFPER[o], fit: "cover",
+    id: uid(), name: "", folder: S.folder && S.folder !== "*" ? S.folder : "", orientation: o, perPage: DEFPER[o], fit: "cover",
     cover: {
       date: todayStr(), toCompany: "", toDept: "", toNote: "",
       zip: "〒141-0031", addr1: "東京都品川区西五反田5-5-7", addr2: "ケーエムビル5階", company: "日都産業株式会社",
-      title: "作業完了報告書", manager: "", workers: "", stamp: true, client: "",
+      title: "作業完了報告書", manager: "", workers: "", stamp: true, managerSeal: "", workerSeal: "", client: "",
       workDate: "", workTime: "", place: "", request: "", content: "", remarks: "", sub: "詳細は別紙参照",
       note1: "作業記録として、本紙を大切に保管頂きますようお願い致します。",
       note2: "もし、ご不明な点がございましたら本紙にてお問合せをお願い致します。"
@@ -692,8 +798,9 @@ class Pen {
     if (!t) return;
     this.block(t, x + 1.2, y + 0.6, w - 2.4, h - 1.2, { max: o.size || 3.6, min: 2.2, align: o.align || "center", valign: "middle", fam: o.fam, spacing: o.spacing, lh: 1.35 });
   }
-  stamp(cx, cy) {
+  stamp(cx, cy, name, maxR) {
     const g = this.g, s = this.s;
+    if (name) { drawSeal(g, cx * s, cy * s, Math.min(maxR || 4.2, 4.6) * s, name); return; }
     g.lineWidth = 0.22 * s; g.strokeStyle = "#333";
     g.beginPath(); g.arc(cx * s, cy * s, 2.4 * s, 0, Math.PI * 2); g.stroke();
     this.text("印", cx, cy + 0.1, { size: 2.6, align: "center" });
@@ -747,10 +854,10 @@ function coverPortrait(p, c) {
   for (let i = 1; i < 6; i++) p.line(x[i], t, x[i], t + h);
   p.cell("責任者", x[0], t, x[1] - x[0], h, { spacing: 2 });
   p.cell(c.manager, x[1], t, x[2] - x[1], h);
-  if (c.stamp) p.stamp((x[2] + x[3]) / 2, t + h / 2);
+  if (c.stamp) p.stamp((x[2] + x[3]) / 2, t + h / 2, c.managerSeal, h / 2 - 0.9);
   p.cell("作業者", x[3], t, x[4] - x[3], h, { spacing: 2 });
   p.cell(c.workers, x[4], t, x[5] - x[4], h);
-  if (c.stamp) p.stamp((x[5] + x[6]) / 2, t + h / 2);
+  if (c.stamp) p.stamp((x[5] + x[6]) / 2, t + h / 2, c.workerSeal, h / 2 - 0.9);
 
   t = 110; h = 17;
   const x2 = [L, 50, 104, 134, R];
@@ -802,10 +909,10 @@ function coverLandscape(p, c) {
   for (let i = 1; i < 6; i++) p.line(x[i], t, x[i], t + h);
   p.cell("責任者", x[0], t, x[1] - x[0], h, { spacing: 2.4 });
   p.cell(c.manager, x[1], t, x[2] - x[1], h);
-  if (c.stamp) p.stamp((x[2] + x[3]) / 2, t + h / 2);
+  if (c.stamp) p.stamp((x[2] + x[3]) / 2, t + h / 2, c.managerSeal, h / 2 - 0.6);
   p.cell("作業者", x[3], t, x[4] - x[3], h, { spacing: 2.4 });
   p.cell(c.workers, x[4], t, x[5] - x[4], h);
-  if (c.stamp) p.stamp((x[5] + x[6]) / 2, t + h / 2);
+  if (c.stamp) p.stamp((x[5] + x[6]) / 2, t + h / 2, c.workerSeal, h / 2 - 0.6);
 
   t = 77; h = 10;
   p.rect(L, t, R - L, h, 0.45);
@@ -985,7 +1092,13 @@ async function renderHome(keepScroll) {
   if (Cloud.sb && !Cloud.user) return renderAuth();
   S.screen = "home"; S.swap = false; S.report = null;
   const sy = window.scrollY;
-  const list = (await DB.getAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+  const all = (await DB.getAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+  const folders = await Settings.allFolders();
+  if (S.folder && S.folder !== "*" && S.folder !== "" && !folders.includes(S.folder)) S.folder = "*";
+  if (S.folder === undefined) S.folder = "*";
+  const list = S.folder === "*" ? all : all.filter(r => (r.folder || "") === S.folder);
+  const cnt = f => all.filter(r => (r.folder || "") === f).length;
+  const chip = (f, label, n) => `<button class="fchip ${S.folder === f ? "on" : ""}" data-act="pickFolder" data-f="${esc(f)}">${esc(label)}<small>${n}</small></button>`;
   bar.innerHTML = `<div class="bar-in"><div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><div class="brand-t">作業完了報告書</div><div class="brand-s">表紙と写真ページを作ってA4のPDFに</div></div></div>${Cloud.user ? `<button class="acct" data-act="account">アカウント</button>` : ""}</div>`;
   const tile = (o, c, rr, t, sub) => `<button class="tile" data-act="new" data-o="${o}">
     <span class="mini ${o}" aria-hidden="true"><i style="--c:${c};--r:${rr}">${"<b></b>".repeat(c * rr)}</i></span>
@@ -1000,15 +1113,18 @@ async function renderHome(keepScroll) {
     </div>
     <h2 class="h2">保存した報告書</h2>
     ${syncChip()}
+    <div class="fbar">${chip("*", "すべて", all.length)}${folders.map(f => chip(f, f, cnt(f))).join("")}${cnt("") && folders.length ? chip("", "未分類", cnt("")) : ""}<button class="fchip add" data-act="newFolder">＋ フォルダ</button></div>
+    ${S.folder && S.folder !== "*" ? `<div class="ftools"><button class="mini-btn" data-act="renameFolder">フォルダ名を変更</button><button class="mini-btn" data-act="deleteFolder">フォルダを削除</button></div>` : ""}
     ${list.length ? `<div class="list">${list.map(r => `
       <div class="item">
         <button class="item-main" data-act="open" data-id="${esc(r.id)}">
           <span class="item-ico ${r.orientation}" aria-hidden="true"></span>
           <span style="min-width:0"><span class="item-t">${esc(displayName(r))}</span>
-          <span class="item-s">${r.orientation === "portrait" ? "縦" : "横"}・写真${photoCount(r)}枚・${fmtDate(r.updatedAt)} 更新</span></span>
+          <span class="item-s">${S.folder === "*" && r.folder ? esc(r.folder) + "・" : ""}${r.orientation === "portrait" ? "縦" : "横"}・写真${photoCount(r)}枚・${fmtDate(r.updatedAt)} 更新</span></span>
         </button>
         <button class="icon-btn" data-act="itemMenu" data-id="${esc(r.id)}" aria-label="その他の操作">…</button>
       </div>`).join("")}</div>`
+      : S.folder && S.folder !== "*" ? `<div class="empty">このフォルダにはまだ報告書がありません。<br>この状態で上から新しく作ると、このフォルダに保存されます。</div>`
       : `<div class="empty">まだ保存した報告書はありません。<br>上の「A4 縦」か「A4 横」から作り始めましょう。</div>`}`;
   dock.hidden = true;
   window.scrollTo(0, keepScroll ? sy : 0);
@@ -1083,9 +1199,27 @@ function renderCover() {
     <div class="cover-pv"><canvas id="coverCv"></canvas><div class="cv-note">入力するとこの見本に反映されます</div></div>
     <div class="fgroup"><h3>一覧での名前</h3><label class="field"><span>空欄なら宛先と作業日から自動で付きます</span><input data-f="name" value="${esc(r.name)}" placeholder="${esc(displayName({ ...r, name: "" }))}"></label></div>
     ${COVER_GROUPS.map(([g, fs]) => `<div class="fgroup"><h3>${g}</h3>${fs.map(f).join("")}
-      ${g === "担当" ? `<label class="check"><input type="checkbox" data-f="cover.stamp" ${c.stamp ? "checked" : ""}>責任者・作業者の横に印欄を入れる</label>` : ""}</div>`).join("")}`;
-  drawCoverPreview();
+      ${g === "担当" ? `<label class="check"><input type="checkbox" data-f="cover.stamp" ${c.stamp ? "checked" : ""}>責任者・作業者の横に印欄を入れる</label>
+        <div id="sealPick">${sealPickers()}</div>` : ""}</div>`).join("")}`;
+  drawCoverPreview(); paintSeals();
 }
+function sealPickers() {
+  const c = S.report.cover;
+  if (!c.stamp) return "";
+  const row = (key, label) => `<div class="seal-h">${label}の印鑑</div><div class="seals">
+    <button class="seal-btn none ${!c[key] ? "on" : ""}" data-act="pickSeal" data-k="${key}" data-n="">押さない</button>
+    ${Settings.v.staff.map(n => `<button class="seal-btn ${c[key] === n ? "on" : ""}" data-act="pickSeal" data-k="${key}" data-n="${esc(n)}"><canvas data-seal="${esc(n)}"></canvas>${esc(n)}</button>`).join("")}
+  </div>`;
+  return row("managerSeal", "責任者") + row("workerSeal", "作業者") +
+    `<button class="mini-btn" data-act="editStaff" style="margin:0">印鑑の名前を編集</button>`;
+}
+function paintSeals() {
+  document.querySelectorAll("canvas[data-seal]").forEach(cv => {
+    const px = 60; cv.width = cv.height = px;
+    drawSeal(cv.getContext("2d"), px / 2, px / 2, px / 2 - 1, cv.dataset.seal);
+  });
+}
+function refreshSealPick() { const el = $("#sealPick"); if (el) { el.innerHTML = sealPickers(); paintSeals(); } }
 function drawCoverPreview() {
   const cv = $("#coverCv"); if (!cv) return;
   const r = S.report;
@@ -1326,7 +1460,7 @@ const ACT = {
   itemMenu(el) {
     S._menuId = el.dataset.id;
     openSheet(`<div class="sh-head"><b>報告書の操作</b><button class="sh-close" data-act="closeSheet">閉じる</button></div>
-      <div class="vbtns"><button class="btn block" data-act="menuOpen">開く</button><button class="btn block" data-act="menuDup">複製して新しく作る</button><button class="btn block danger" data-act="menuDel">削除</button></div>`);
+      <div class="vbtns"><button class="btn block" data-act="menuOpen">開く</button><button class="btn block" data-act="menuMove">フォルダに移動</button><button class="btn block" data-act="menuDup">複製して新しく作る</button><button class="btn block danger" data-act="menuDel">削除</button></div>`);
   },
   menuOpen() { closeSheet(); openReport(S._menuId); },
   async menuDup() {
@@ -1337,6 +1471,67 @@ const ACT = {
   menuDel() {
     confirmSheet("報告書を削除しますか？", "削除すると元に戻せません。書き出したPDFは残ります。", "削除する", async () => { const id = S._menuId; await DB.del(id); await gcImages(); renderHome(); toast("削除しました"); Cloud.remove(id); });
   },
+  pickSeal(el) {
+    const c = S.report.cover, k = el.dataset.k, n = el.dataset.n;
+    c[k] = n;
+    const f = k === "managerSeal" ? "manager" : "workers";
+    if (n && !String(c[f] || "").trim()) { c[f] = n; const inp = view.querySelector(`[data-f="cover.${f}"]`); if (inp) inp.value = n; }
+    markDirty(); refreshSealPick(); drawCoverPreview();
+  },
+  editStaff() {
+    openSheet(`<div class="sh-head"><b>印鑑の名前</b><button class="sh-close" data-act="closeSheet">閉じる</button></div>
+      <p class="sh-text">1行に1人ずつ、印鑑に入れる名前（苗字）を書いてください。4文字まで印鑑に入ります。</p>
+      <textarea id="staffTa" rows="7">${esc(Settings.v.staff.join("\n"))}</textarea>
+      <div class="vbtns"><button class="btn primary block" data-act="saveStaff">保存する</button></div>`);
+  },
+  async saveStaff() {
+    const v = ($("#staffTa")?.value || "").split(/\n/).map(s => s.trim()).filter(Boolean);
+    Settings.v.staff = [...new Set(v)].slice(0, 30);
+    await Settings.save(); closeSheet(); refreshSealPick(); toast("印鑑の名前を保存しました");
+  },
+  pickFolder(el) { S.folder = el.dataset.f; renderHome(true); },
+  newFolder() { folderNameSheet("新しいフォルダ", "", "createFolder"); },
+  async createFolder() {
+    const n = folderInput(); if (!n) return;
+    if (!Settings.v.folders.includes(n)) Settings.v.folders.push(n);
+    await Settings.save(); closeSheet();
+    if (S._moveId) { await moveReport(S._moveId, n); S._moveId = null; }
+    S.folder = n; renderHome(); toast(`「${n}」を作りました`);
+  },
+  renameFolder() { folderNameSheet("フォルダ名を変更", S.folder, "doRenameFolder"); },
+  async doRenameFolder() {
+    const n = folderInput(); if (!n || n === S.folder) return closeSheet();
+    const old = S.folder;
+    busy(true, "変更しています");
+    for (const r of await DB.getAll()) if (r.folder === old) { r.folder = n; await DB.put(r); if (Cloud.user) Cloud.pending.add(r.id); }
+    Settings.v.folders = Settings.v.folders.filter(f => f !== old);
+    if (!Settings.v.folders.includes(n)) Settings.v.folders.push(n);
+    if (Cloud.user) await Cloud.saveMeta();
+    await Settings.save();
+    busy(false); closeSheet(); S.folder = n; renderHome(); toast("フォルダ名を変更しました");
+  },
+  deleteFolder() {
+    const f = S.folder;
+    confirmSheet(`「${f}」を削除しますか？`, "中の報告書は削除されず、「未分類」に移ります。", "フォルダを削除", async () => {
+      for (const r of await DB.getAll()) if (r.folder === f) { r.folder = ""; await DB.put(r); if (Cloud.user) Cloud.pending.add(r.id); }
+      Settings.v.folders = Settings.v.folders.filter(x => x !== f);
+      if (Cloud.user) await Cloud.saveMeta();
+      await Settings.save();
+      S.folder = "*"; renderHome(); toast("フォルダを削除しました");
+    });
+  },
+  async menuMove() {
+    const r = await DB.get(S._menuId); if (!r) return closeSheet();
+    const folders = await Settings.allFolders();
+    openSheet(`<div class="sh-head"><b>フォルダに移動</b><button class="sh-close" data-act="closeSheet">閉じる</button></div>
+      <div class="fpick">
+        <button class="btn block ${!r.folder ? "on" : ""}" data-act="moveTo" data-f="">未分類</button>
+        ${folders.map(f => `<button class="btn block ${r.folder === f ? "on" : ""}" data-act="moveTo" data-f="${esc(f)}">${esc(f)}</button>`).join("")}
+        <button class="btn block" data-act="moveNew">＋ 新しいフォルダを作って移動</button>
+      </div>`);
+  },
+  async moveTo(el) { await moveReport(S._menuId, el.dataset.f); closeSheet(); renderHome(true); toast(el.dataset.f ? `「${el.dataset.f}」に移動しました` : "未分類に移動しました"); },
+  moveNew() { S._moveId = S._menuId; folderNameSheet("新しいフォルダ", "", "createFolder"); },
   authMode(el) { authVals(); renderAuth(el.dataset.m); },
   async authLogin() {
     const v = authVals();
@@ -1538,6 +1733,7 @@ document.addEventListener("change", e => {
   const el = e.target;
   if (el.type === "checkbox" && el.dataset.f === "cover.stamp" && S.report) {
     if (S.report.cover.stamp !== el.checked) { S.report.cover.stamp = el.checked; markDirty(); drawCoverPreview(); }
+    refreshSealPick();
   }
 });
 let rzT; window.addEventListener("resize", () => { clearTimeout(rzT); rzT = setTimeout(() => { if (S.screen === "editor" && S.tab === "cover") drawCoverPreview(); }, 200); });
@@ -1561,6 +1757,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
     if (session) await startUser(session.user); else renderAuth();
   } else {
     await DB.open();
+    await Settings.load();
     await gcImages();
     renderHome();
   }
