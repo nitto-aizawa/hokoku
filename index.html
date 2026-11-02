@@ -238,6 +238,19 @@ main{max-width:760px;margin:0 auto;padding:16px 14px 120px}
 .seal-h{font-size:13px;color:var(--muted);margin:6px 0 6px}
 .fpick{display:flex;flex-direction:column;gap:8px;margin:8px 0}
 .fpick .btn.on{border-color:var(--accent);background:var(--accent-soft)}
+
+/* work items */
+.items{margin-top:6px}
+.it-head,.it-row{display:grid;grid-template-columns:1fr 34px;gap:6px;align-items:center}
+.items.q .it-head,.items.q .it-row{grid-template-columns:1fr 52px 62px 34px}
+.it-head{font-size:12px;color:var(--muted);margin:8px 0 4px}
+.it-head .r{text-align:right}
+.it-row{margin-bottom:6px}
+.it-row input,.it-row select{width:100%;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);padding:9px 8px;font:inherit;font-size:16px;min-width:0}
+.it-row .qty{text-align:right}
+.it-row select{padding:9px 4px;appearance:none;-webkit-appearance:none;text-align:right;text-align-last:right}
+.it-del{border:1px solid var(--line);background:var(--surface);border-radius:9px;height:40px;color:var(--muted);font-size:16px}
+.it-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
 </style>
 </head>
 <body>
@@ -362,11 +375,11 @@ async function processFile(file) {
 
 /* ---------- seal (電子印鑑) ---------- */
 const SEAL_RED = "#C8102E";
-function drawSeal(g, cx, cy, r, name) {
+function drawSeal(g, cx, cy, r, name, alpha = 0.9) {
   const chars = [...String(name).replace(/\s/g, "")].slice(0, 4);
   if (!chars.length) return;
   g.save();
-  g.globalAlpha = 0.9;
+  g.globalAlpha = alpha;
   g.strokeStyle = SEAL_RED; g.fillStyle = SEAL_RED;
   g.lineWidth = Math.max(1, r * 0.1);
   g.beginPath(); g.arc(cx, cy, r - g.lineWidth / 2, 0, Math.PI * 2); g.stroke();
@@ -679,7 +692,7 @@ function newReport(o) {
       date: todayStr(), toCompany: "", toDept: "", toNote: "",
       zip: "〒141-0031", addr1: "東京都品川区西五反田5-5-7", addr2: "ケーエムビル5階", company: "日都産業株式会社",
       title: "作業完了報告書", manager: "", workers: "", stamp: true, managerSeal: "", workerSeal: "", client: "",
-      workDate: "", workTime: "", place: "", request: "", content: "", remarks: "", sub: "詳細は別紙参照",
+      workDate: "", workTime: "", place: "", request: "", content: "", items: [{ t: "", q: "", u: "" }, { t: "", q: "", u: "" }, { t: "", q: "", u: "" }], qtyCols: false, remarks: "", sub: "詳細は別紙参照",
       note1: "作業記録として、本紙を大切に保管頂きますようお願い致します。",
       note2: "もし、ご不明な点がございましたら本紙にてお問合せをお願い致します。"
     },
@@ -691,6 +704,20 @@ function pageSlots(r, pi) { return r.slots.slice(pi * r.perPage, (pi + 1) * r.pe
 function newHeader(r) {
   const last = r.headers[r.headers.length - 1];
   return last ? { ...last } : { place: r.cover.place || "", area: "", date: r.cover.workDate || "", weekday: "" };
+}
+const UNITS = ["", "枚", "基", "台", "箇所", "個", "本", "式", "回", "室", "面", "㎡", "m", "店舗", "名", "時間", "袋", "kg", "L"];
+function coverItems(c) {
+  if (!Array.isArray(c.items)) {
+    const lines = String(c.content || "").split("\n");
+    c.items = lines.map(t => ({ t, q: "", u: "" }));
+    while (c.items.length < 3) c.items.push({ t: "", q: "", u: "" });
+  }
+  return c.items;
+}
+function itemsText(c) {
+  const its = coverItems(c);
+  let last = -1; its.forEach((it, i) => { if ((it.t || "").trim() || (it.q || "").trim()) last = i; });
+  return its.slice(0, last + 1);
 }
 function normalize(r) {
   r.perPage = clamp(r.perPage | 0 || 1, 1, MAXPER[r.orientation]);
@@ -800,10 +827,10 @@ class Pen {
   }
   stamp(cx, cy, name, maxR) {
     const g = this.g, s = this.s;
-    if (name) { drawSeal(g, cx * s, cy * s, Math.min(maxR || 4.2, 4.6) * s, name); return; }
     g.lineWidth = 0.22 * s; g.strokeStyle = "#333";
     g.beginPath(); g.arc(cx * s, cy * s, 2.4 * s, 0, Math.PI * 2); g.stroke();
     this.text("印", cx, cy + 0.1, { size: 2.6, align: "center" });
+    if (name) drawSeal(g, cx * s, cy * s, Math.min(maxR || 4.2, 4.6) * s, name, 0.8);
   }
   image(img, b, rot, fit) {
     const g = this.g, s = this.s;
@@ -834,6 +861,39 @@ function drawNotes(p, c, x, y, w) {
     p.fitLine(n, x + 6, y + i * 5.6, w - 6, { size: 3.2 });
   });
 }
+function drawWork(p, c, lx, R, top, h, land) {
+  const rows = itemsText(c);
+  if (!c.qtyCols) {
+    const text = rows.map(it => it.t || "").join("\n");
+    if (land) p.block(text, lx + 2, top + 2, R - lx - 4, h - 4, { max: 3.8, min: 2.2, lh: 1.9 });
+    else p.block(text, lx + 2, top + 1, R - lx - 4, h - 2, { max: 3.8, min: 2.2, lh: 1.6, ruled: true, ruleX1: lx, ruleX2: R });
+    return;
+  }
+  const uw = land ? 18 : 15, qw = land ? 22 : 18;
+  const ux = R - uw, qx = ux - qw;
+  const hh = land ? 6 : 5.6;
+  p.line(qx, top, qx, top + h, 0.22); p.line(ux, top, ux, top + h, 0.22);
+  p.cell("内容", lx, top, qx - lx, hh, { size: 3 });
+  p.cell("数量", qx, top, qw, hh, { size: 3 });
+  p.cell("単位", ux, top, uw, hh, { size: 3 });
+  p.line(lx, top + hh, R, top + hh, 0.22);
+  const avail = h - hh;
+  let rh = land ? 7.6 : 7;
+  if (rows.length * rh > avail) rh = Math.max(4.2, avail / rows.length);
+  const size = Math.min(3.8, rh * 0.55);
+  const n = Math.min(rows.length, Math.floor(avail / rh));
+  const lines = Math.floor(avail / rh);
+  for (let i = 0; i < lines; i++) {
+    const y = top + hh + rh * (i + 1);
+    if (y < top + h - 0.5) p.line(lx, y, R, y, 0.12);
+  }
+  for (let i = 0; i < n; i++) {
+    const it = rows[i], cy = top + hh + rh * (i + 0.5);
+    p.fitLine(it.t || "", lx + 2, cy, qx - lx - 4, { size });
+    if (it.q) p.fitLine(String(it.q), qx + qw - 1.6, cy, qw - 3, { size, align: "right" });
+    if (it.u) p.fitLine(String(it.u), ux + uw - 1.6, cy, uw - 3, { size, align: "right" });
+  }
+}
 function coverPortrait(p, c) {
   const L = 20, R = 190, W = 210;
   const to1 = c.toCompany || "", to2 = c.toDept || "";
@@ -842,8 +902,8 @@ function coverPortrait(p, c) {
   else if (to1 || to2) p.fitLine((to1 || to2) + "　御中", L, 24, 100, { size: 4 });
   if (c.toNote) p.fitLine(c.toNote, L + 18, ny, 80, { size: 3.4 });
   p.fitLine(c.date, R, 24, 70, { size: 3.6, align: "right" });
-  p.fitLine(c.zip, 122, 44, 68, { size: 3.5 });
-  p.fitLine(c.addr1, 122, 50, 68, { size: 3.5 });
+  p.fitLine(c.zip, R, 44, 68, { size: 3.5, align: "right" });
+  p.fitLine(c.addr1, R, 50, 68, { size: 3.5, align: "right" });
   p.fitLine(c.addr2, R, 56, 68, { size: 3.5, align: "right" });
   p.fitLine(c.company, R, 66, 80, { size: 4.2, align: "right", spacing: 1.4 });
   drawTitle(p, c.title, W / 2, 82, 7);
@@ -882,7 +942,7 @@ function coverPortrait(p, c) {
   }
   const conH = bottom - remH - yy;
   p.cell("作業内容", L, yy, lx - L, conH);
-  p.block(c.content, lx + 2, yy + 1, R - lx - 4, conH - 2, { max: 3.8, min: 2.2, lh: 1.6, ruled: true, ruleX1: lx, ruleX2: R });
+  drawWork(p, c, lx, R, yy, conH, false);
   yy = bottom - remH; p.line(L, yy, R, yy);
   p.cell("備考", L, yy, lx - L, remH);
   p.block(c.remarks, lx + 2, yy, R - lx - 4, remH, { max: 3.4, valign: "middle", lh: 1.3 });
@@ -898,8 +958,8 @@ function coverLandscape(p, c) {
   p.fitLine(c.date, R, 17, 80, { size: 3.8, align: "right", spacing: 0.8 });
   drawTitle(p, c.title, W / 2 - 6, 29, 7.5);
   const ax = 202;
-  p.fitLine(c.zip, ax, 38, R - ax, { size: 3.6 });
-  p.fitLine(c.addr1, ax, 44, R - ax, { size: 3.6 });
+  p.fitLine(c.zip, R, 38, R - ax, { size: 3.6, align: "right" });
+  p.fitLine(c.addr1, R, 44, R - ax, { size: 3.6, align: "right" });
   p.fitLine(c.addr2, R, 50, R - ax, { size: 3.6, align: "right" });
   p.fitLine(c.company, R, 59, R - ax, { size: 4.2, align: "right", spacing: 1.6 });
 
@@ -942,7 +1002,7 @@ function coverLandscape(p, c) {
   }
   const conH = bottom - remH - yy;
   p.cell("作業内容", L, yy, lx - L, conH);
-  p.block(c.content, lx + 2, yy + 2, R - lx - 4, conH - 4, { max: 3.8, min: 2.2, lh: 1.9 });
+  drawWork(p, c, lx, R, yy, conH, true);
   yy = bottom - remH; p.line(L, yy, R, yy);
   p.cell("備考", L, yy, lx - L, remH);
   p.block(c.remarks, lx + 2, yy, R - lx - 4, remH, { max: 3.5, valign: "middle", lh: 1.3 });
@@ -1181,12 +1241,13 @@ const COVER_GROUPS = [
   ["発行", [["date", "発行日", "", "date"], ["title", "表題", ""], ["zip", "郵便番号", ""], ["addr1", "住所", ""], ["addr2", "建物名", ""], ["company", "会社名", ""]]],
   ["担当", [["manager", "責任者", "例：吉田 朗人"], ["workers", "作業者", "例：玉岡 弘成　斎藤 恵一"], ["client", "ご依頼者（「様」まで入力）", "例：設備部 野口 様"]]],
   ["作業", [["workDate", "作業日", "例：2025年12月26日〜27日", "date"], ["workTime", "作業時間", "例：20:00〜23:00"], ["place", "作業場所", "例：本館B1階 各厨房"]]],
-  ["内容", [["request", "依頼内容（空欄なら欄ごと非表示）", "例：執務室内床面カーペット洗浄作業", "area"], ["content", "作業内容（改行がそのまま反映されます）", "例：各厨房グリスフィルター清掃\nまい泉（1枚）\nいとはん（3枚）", "big"], ["remarks", "備考", "例：施工実施範囲別紙参照"], ["sub", "表の下の一文（空欄なら非表示）", ""]]],
+  ["内容", [["request", "依頼内容（空欄なら欄ごと非表示）", "例：執務室内床面カーペット洗浄作業", "area"], ["__items"], ["remarks", "備考", "例：施工実施範囲別紙参照"], ["sub", "表の下の一文（空欄なら非表示）", ""]]],
   ["注記", [["note1", "注記 1", "", "area"], ["note2", "注記 2", "", "area"]]]
 ];
 function renderCover() {
   const r = S.report, c = r.cover;
   const f = ([k, label, ph, type]) => {
+    if (k === "__items") return `<div class="field"><span>作業内容</span><div id="itemsEd">${itemsEditor()}</div></div>`;
     const v = esc(c[k]);
     const today = type === "date" ? `<button type="button" class="mini-btn" data-act="today" data-k="${k}">今日</button>` : "";
     const inp = type === "area" ? `<textarea rows="2" data-f="cover.${k}" placeholder="${esc(ph)}">${v}</textarea>`
@@ -1203,6 +1264,22 @@ function renderCover() {
         <div id="sealPick">${sealPickers()}</div>` : ""}</div>`).join("")}`;
   drawCoverPreview(); paintSeals();
 }
+function itemsEditor() {
+  const c = S.report.cover, its = coverItems(c), q = !!c.qtyCols;
+  const opts = v => UNITS.concat(v && !UNITS.includes(v) ? [v] : []).map(u => `<option value="${esc(u)}" ${u === (v || "") ? "selected" : ""}>${u ? esc(u) : "—"}</option>`).join("");
+  return `<div class="items ${q ? "q" : ""}">
+    ${q ? `<div class="it-head"><span>内容</span><span class="r">数量</span><span class="r">単位</span><span></span></div>` : ""}
+    ${its.map((it, i) => `<div class="it-row">
+      <input data-f="cover.items.${i}.t" value="${esc(it.t)}" placeholder="${i === 0 ? "例：フード整備" : ""}" autocomplete="off" aria-label="内容 ${i + 1}">
+      ${q ? `<input class="qty" data-f="cover.items.${i}.q" value="${esc(it.q)}" inputmode="decimal" autocomplete="off" aria-label="数量 ${i + 1}">
+      <select data-f="cover.items.${i}.u" aria-label="単位 ${i + 1}">${opts(it.u)}</select>` : ""}
+      <button class="it-del" data-act="itemDel" data-i="${i}" aria-label="${i + 1}行目を消す">×</button>
+    </div>`).join("")}
+    <div class="it-tools"><button class="mini-btn" data-act="itemAdd">＋ 行を追加</button></div>
+    <label class="check"><input type="checkbox" data-f="cover.qtyCols" ${q ? "checked" : ""}>数量・単位の欄を使う</label>
+  </div>`;
+}
+function refreshItems() { const el = $("#itemsEd"); if (el) el.innerHTML = itemsEditor(); drawCoverPreview(); }
 function sealPickers() {
   const c = S.report.cover;
   if (!c.stamp) return "";
@@ -1471,6 +1548,13 @@ const ACT = {
   menuDel() {
     confirmSheet("報告書を削除しますか？", "削除すると元に戻せません。書き出したPDFは残ります。", "削除する", async () => { const id = S._menuId; await DB.del(id); await gcImages(); renderHome(); toast("削除しました"); Cloud.remove(id); });
   },
+  itemAdd() { coverItems(S.report.cover).push({ t: "", q: "", u: "" }); markDirty(); refreshItems();
+    const ins = view.querySelectorAll('#itemsEd .it-row input:first-child'); ins[ins.length - 1]?.focus(); },
+  itemDel(el) {
+    const its = coverItems(S.report.cover), i = +el.dataset.i;
+    if (its.length <= 1) its[0] = { t: "", q: "", u: "" }; else its.splice(i, 1);
+    markDirty(); refreshItems();
+  },
   pickSeal(el) {
     const c = S.report.cover, k = el.dataset.k, n = el.dataset.n;
     c[k] = n;
@@ -1735,6 +1819,10 @@ document.addEventListener("change", e => {
     if (S.report.cover.stamp !== el.checked) { S.report.cover.stamp = el.checked; markDirty(); drawCoverPreview(); }
     refreshSealPick();
   }
+  if (el.type === "checkbox" && el.dataset.f === "cover.qtyCols" && S.report) {
+    S.report.cover.qtyCols = el.checked; markDirty(); refreshItems();
+  }
+  if (el.tagName === "SELECT" && (el.dataset.f || "").startsWith("cover.items.") && S.report) drawCoverPreview();
 });
 let rzT; window.addEventListener("resize", () => { clearTimeout(rzT); rzT = setTimeout(() => { if (S.screen === "editor" && S.tab === "cover") drawCoverPreview(); }, 200); });
 
