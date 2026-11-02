@@ -1010,6 +1010,32 @@ function coverLandscape(p, c) {
   if (c.sub) { p.rect(L, bottom, R - L, 7, 0.3); p.cell(c.sub, L, bottom, R - L, 7, { size: 3.4 }); fy += 7; }
   drawNotes(p, c, L, fy + 7, R - L);
 }
+const FLOW_DEF = ["施工前", "施工中", "施工後"];
+function flowLabels(r, cols) {
+  const f = (r.flowLabels && r.flowLabels.length === 3) ? r.flowLabels : FLOW_DEF;
+  if (cols === 2) return [f[0], f[2]];
+  if (cols === 3) return [f[0], f[1], f[2]];
+  return [];
+}
+function flowHint(r) {
+  const [cols] = grid(r.orientation, r.perPage);
+  if (cols < 2) return "写真が横に2列以上のときに使えます";
+  return "左から " + flowLabels(r, cols).join(" → ");
+}
+function drawArrow(p, x1, x2, cy, hgt) {
+  const g = p.g, s = p.s;
+  const len = x2 - x1, head = Math.min(len * 0.5, hgt * 1.1), sh = hgt * 0.42;
+  g.save(); g.fillStyle = "#3A4A52";
+  g.beginPath();
+  g.moveTo(x1 * s, (cy - sh / 2) * s);
+  g.lineTo((x2 - head) * s, (cy - sh / 2) * s);
+  g.lineTo((x2 - head) * s, (cy - hgt / 2) * s);
+  g.lineTo(x2 * s, cy * s);
+  g.lineTo((x2 - head) * s, (cy + hgt / 2) * s);
+  g.lineTo((x2 - head) * s, (cy + sh / 2) * s);
+  g.lineTo(x1 * s, (cy + sh / 2) * s);
+  g.closePath(); g.fill(); g.restore();
+}
 async function photoPage(p, r, pi) {
   const W = p.W, H = p.H, land = r.orientation === "landscape";
   const m = land ? 10 : 12;
@@ -1038,13 +1064,31 @@ async function photoPage(p, r, pi) {
     }
   }
   const [cols, rows] = grid(r.orientation, r.perPage);
-  const gx = m, gw = W - 2 * m, gy = top, gh = H - m - top;
-  const cw = gw / cols, ch = gh / rows;
+  const flow = !!r.flow && cols >= 2, arrows = !!r.arrows && cols >= 2;
+  const gap = arrows ? (land ? 10 : 8) : 0;
+  const gx = m, gw = W - 2 * m;
+  let gy = top;
+  const cw = (gw - gap * (cols - 1)) / cols;
+  if (flow) {
+    const fh = land ? 8 : 7.5, labs = flowLabels(r, cols);
+    for (let c = 0; c < cols; c++) {
+      const x = gx + c * (cw + gap);
+      p.g.save(); p.g.fillStyle = "#E9EEF0"; p.g.fillRect(x * p.s, gy * p.s, cw * p.s, fh * p.s); p.g.restore();
+      p.rect(x, gy, cw, fh, 0.3);
+      p.fitLine(labs[c], x + cw / 2, gy + fh / 2, cw - 4, { size: land ? 4 : 3.8, fam: GOTHIC, weight: "700", align: "center", spacing: 0.6 });
+    }
+    gy += fh + 1.5;
+  }
+  const gh = H - m - gy;
+  const ch = gh / rows;
   const hasLabel = slots.some(s => s.label);
-  p.rect(gx, gy, gw, gh, 0.45);
+  const showP = r.capPlace !== false, showC = r.capContent !== false;
+  if (gap) { for (let c = 0; c < cols; c++) p.rect(gx + c * (cw + gap), gy, cw, gh, 0.45); }
+  else p.rect(gx, gy, gw, gh, 0.45);
   for (let i = 0; i < r.perPage; i++) {
     const s = slots[i] || emptySlot();
-    const x = gx + (i % cols) * cw, y = gy + Math.floor(i / cols) * ch;
+    const col = i % cols;
+    const x = gx + col * (cw + gap), y = gy + Math.floor(i / cols) * ch;
     p.rect(x, y, cw, ch, 0.3);
     const fs = clamp(Math.min(cw, ch * 1.3) * 0.042, 2.3, 3.5);
     let iy = y;
@@ -1055,19 +1099,28 @@ async function photoPage(p, r, pi) {
       iy = y + lh;
     }
     const lineH = fs * 1.5;
-    const capH = lineH * 3 + 1.2;
+    const nLines = (showP ? 1 : 0) + (showC ? 2 : 0);
+    const capH = nLines ? lineH * nLines + 1.2 : 0;
     const cy = y + ch - capH;
     const box = { x: x + 1.4, y: iy + 1.4, w: cw - 2.8, h: cy - iy - 2.8 };
     if (s.imgId) {
       const o = await loadImg(s.imgId);
       if (o && o.img) p.image(o.img, box, s.rot || 0, r.fit);
     }
+    if (arrows && col < cols - 1) drawArrow(p, x + cw + gap * 0.18, x + cw + gap * 0.82, box.y + box.h / 2, Math.min(gap * 0.8, 7));
+    if (!nLines) continue;
     p.line(x, cy, x + cw, cy, 0.22);
-    p.text("場所：", x + 1.6, cy + 0.6 + lineH / 2, { size: fs, fam: GOTHIC, weight: "600" });
     const lw = p.measure("場所：", fs, GOTHIC, 0, "600");
-    p.fitLine(s.place, x + 1.6 + lw, cy + 0.6 + lineH / 2, cw - 3.2 - lw, { size: fs, fam: GOTHIC, min: fs * 0.75 });
-    p.text("内容：", x + 1.6, cy + 0.6 + lineH * 1.5, { size: fs, fam: GOTHIC, weight: "600" });
-    p.block(s.content, x + 1.6 + lw, cy + 0.6 + lineH, cw - 3.2 - lw, lineH * 2, { max: fs, min: fs * 0.75, fam: GOTHIC, lh: 1.5 });
+    let ly = cy + 0.6;
+    if (showP) {
+      p.text("場所：", x + 1.6, ly + lineH / 2, { size: fs, fam: GOTHIC, weight: "600" });
+      p.fitLine(s.place, x + 1.6 + lw, ly + lineH / 2, cw - 3.2 - lw, { size: fs, fam: GOTHIC, min: fs * 0.75 });
+      ly += lineH;
+    }
+    if (showC) {
+      p.text("内容：", x + 1.6, ly + lineH / 2, { size: fs, fam: GOTHIC, weight: "600" });
+      p.block(s.content, x + 1.6 + lw, ly, cw - 3.2 - lw, lineH * 2, { max: fs, min: fs * 0.75, fam: GOTHIC, lh: 1.5 });
+    }
   }
 }
 function exportPages(r) {
@@ -1318,6 +1371,17 @@ function renderPhotos() {
       <span class="stepper"><button data-act="per" data-d="-1" ${r.perPage <= 1 ? "disabled" : ""} aria-label="減らす">−</button><b>${r.perPage}枚</b><button data-act="per" data-d="1" ${r.perPage >= max ? "disabled" : ""} aria-label="増やす">＋</button></span></div>
     <div class="prow"><span class="plabel">写真の収め方</span>
       <span class="seg"><button data-act="fit" data-v="cover" class="${r.fit === "cover" ? "on" : ""}">枠いっぱい</button><button data-act="fit" data-v="contain" class="${r.fit === "contain" ? "on" : ""}">全体を表示</button></span></div>
+    <div class="prow" style="flex-direction:column;align-items:stretch;gap:0">
+      <span class="plabel">写真の下の欄</span>
+      <label class="check" style="margin-top:6px"><input type="checkbox" data-pt="capPlace" ${r.capPlace !== false ? "checked" : ""}>「場所」を入れる</label>
+      <label class="check" style="margin-top:8px"><input type="checkbox" data-pt="capContent" ${r.capContent !== false ? "checked" : ""}>「内容」を入れる</label>
+    </div>
+    <div class="prow" style="flex-direction:column;align-items:stretch;gap:0">
+      <span class="plabel">施工の流れ<br><span class="phint">${flowHint(r)}</span></span>
+      <label class="check" style="margin-top:6px"><input type="checkbox" data-pt="flow" ${r.flow ? "checked" : ""} ${cols < 2 ? "disabled" : ""}>列の上に見出しを入れる</label>
+      <label class="check" style="margin-top:8px"><input type="checkbox" data-pt="arrows" ${r.arrows ? "checked" : ""} ${cols < 2 ? "disabled" : ""}>写真の間に矢印（→）を入れる</label>
+      ${r.flow && cols >= 2 ? `<div style="margin-top:8px"><button class="mini-btn" data-act="flowLabels">見出しの文字を変える</button></div>` : ""}
+    </div>
     <div class="prow"><span class="plabel">並べ替え<br><span class="phint">2枚をタップして入れ替え</span></span>
       <button class="btn small" data-act="swapMode">${S.swap ? "終了" : "入れ替える"}</button></div>
   </div>`;
@@ -1548,6 +1612,17 @@ const ACT = {
   menuDel() {
     confirmSheet("報告書を削除しますか？", "削除すると元に戻せません。書き出したPDFは残ります。", "削除する", async () => { const id = S._menuId; await DB.del(id); await gcImages(); renderHome(); toast("削除しました"); Cloud.remove(id); });
   },
+  flowLabels() {
+    const f = (S.report.flowLabels && S.report.flowLabels.length === 3) ? S.report.flowLabels : FLOW_DEF;
+    openSheet(`<div class="sh-head"><b>見出しの文字</b><button class="sh-close" data-act="closeSheet">閉じる</button></div>
+      <p class="sh-text">2列のときは「左」と「右」、3列のときは3つとも使います。</p>
+      <label>左<input id="fl0" value="${esc(f[0])}"></label>
+      <label>真ん中（3列のとき）<input id="fl1" value="${esc(f[1])}"></label>
+      <label>右<input id="fl2" value="${esc(f[2])}"></label>
+      <div class="vbtns"><button class="btn primary block" data-act="saveFlow">決定</button><button class="btn block" data-act="resetFlow">元に戻す（施工前・施工中・施工後）</button></div>`);
+  },
+  saveFlow() { S.report.flowLabels = [0, 1, 2].map(i => ($("#fl" + i)?.value || "").trim()); markDirty(); closeSheet(); renderPhotos(); },
+  resetFlow() { S.report.flowLabels = FLOW_DEF.slice(); markDirty(); closeSheet(); renderPhotos(); },
   itemAdd() { coverItems(S.report.cover).push({ t: "", q: "", u: "" }); markDirty(); refreshItems();
     const ins = view.querySelectorAll('#itemsEd .it-row input:first-child'); ins[ins.length - 1]?.focus(); },
   itemDel(el) {
@@ -1818,6 +1893,9 @@ document.addEventListener("change", e => {
   if (el.type === "checkbox" && el.dataset.f === "cover.stamp" && S.report) {
     if (S.report.cover.stamp !== el.checked) { S.report.cover.stamp = el.checked; markDirty(); drawCoverPreview(); }
     refreshSealPick();
+  }
+  if (el.type === "checkbox" && el.dataset.pt && S.report) {
+    S.report[el.dataset.pt] = el.checked; markDirty(); renderPhotos();
   }
   if (el.type === "checkbox" && el.dataset.f === "cover.qtyCols" && S.report) {
     S.report.cover.qtyCols = el.checked; markDirty(); refreshItems();
